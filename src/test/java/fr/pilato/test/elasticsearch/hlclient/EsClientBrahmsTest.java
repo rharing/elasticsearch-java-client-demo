@@ -31,24 +31,15 @@ import co.elastic.clients.elasticsearch.cat.ShardsResponse;
 import co.elastic.clients.elasticsearch.cat.ThreadPoolResponse;
 import co.elastic.clients.elasticsearch.cluster.PutComponentTemplateResponse;
 import co.elastic.clients.elasticsearch.core.*;
-import co.elastic.clients.elasticsearch.core.search.HighlightField;
 import co.elastic.clients.elasticsearch.ilm.PutLifecycleResponse;
-import co.elastic.clients.elasticsearch.indices.CreateIndexResponse;
 import co.elastic.clients.elasticsearch.indices.PutIndexTemplateResponse;
-import co.elastic.clients.elasticsearch.indices.PutMappingResponse;
 import co.elastic.clients.elasticsearch.ingest.PutPipelineResponse;
 import co.elastic.clients.elasticsearch.ingest.SimulateResponse;
-import co.elastic.clients.elasticsearch.sql.TranslateResponse;
-import co.elastic.clients.elasticsearch.transform.GetTransformResponse;
-import co.elastic.clients.elasticsearch.transform.PutTransformResponse;
 import co.elastic.clients.json.JsonData;
 import co.elastic.clients.transport.TransportException;
 import co.elastic.clients.transport.endpoints.BinaryResponse;
 import co.elastic.clients.util.BinaryData;
 import co.elastic.clients.util.ContentType;
-import co.elastic.clients.util.DateTime;
-import co.elastic.clients.util.NamedValue;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -62,7 +53,6 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -70,9 +60,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.random.RandomGenerator;
 
 import static fr.pilato.test.elasticsearch.hlclient.SSLUtils.createContextFromCaCert;
 import static fr.pilato.test.elasticsearch.hlclient.SSLUtils.createTrustAllCertsContext;
@@ -183,25 +171,25 @@ class EsClientBrahmsTest {
     }
 
     private void importBrahmsFrom(String type) throws IOException {
-        String dir = "D:\\data\\nba\\etl\\ndjson\\brahms\\" + type;
+        String dir = "/data/nba/etl/ndjson/brahms/" + type;
         String indexNameBase = "2025-10-17-142803-brahms-";
 
         String indexName = indexNameBase + type;
         File dirFile = new File(dir);
+        int recordsCreated = 0;
         LocalDateTime start = LocalDateTime.now();
-        for (File file : dirFile.listFiles()) {
+        for (File file : dirFile.listFiles((dir1, name) -> name.endsWith(".jsonl"))) {
             System.out.println("reading file = " + file.getAbsolutePath());
             LocalDateTime startRead = LocalDateTime.now();
-            indexBulkFile(file);
+            recordsCreated += indexBulkFile(indexName,file);
             System.out.println("done file = " + file.getAbsolutePath());
             LocalDateTime endRead = LocalDateTime.now();
-            System.out.println("indexing this file took" + ChronoUnit.SECONDS.between(startRead, endRead) + " seconds");
+            System.out.println("indexing this file took " + ChronoUnit.SECONDS.between(startRead, endRead) + " seconds");
         }
         LocalDateTime end = LocalDateTime.now();
-        long minutes = ChronoUnit.MINUTES.between(start, end);
         long seconds = ChronoUnit.SECONDS.between(start, end);
-        System.out.println("minutes = " + minutes);
         System.out.println("seconds = " + seconds);
+      System.out.println("recordsCreated = " + recordsCreated);
     }
 
 
@@ -292,19 +280,18 @@ class EsClientBrahmsTest {
     }
 
 
-    private void indexBulkFile(File file) throws IOException {
-        String indexNameBrahms = indexName;
+    private Integer indexBulkFile(String indexName, File file) throws IOException {
         //trying
-        //maxoperations 10_000 : 80 minuten
-        //maxoperations 100_000 : 80 minuten
+        //maxoperations 100_000 : 28 min
         try (final BulkIngester<Void> ingester = BulkIngester.of(b -> b
                 .client(client)
                 .globalSettings(gs -> gs
-                        .index(indexNameBrahms)
+                        .index(indexName)
                 )
                 .maxOperations(100_000)
                 .flushInterval(5, TimeUnit.SECONDS)
         )) {
+          int recordscreated = 0;
             //@todo keep track where we were file and linewise for restart purposes
             try (LineNumberReader reader = new LineNumberReader(new FileReader(file))) {
                 for (String docId = reader.readLine(); docId != null; docId = reader.readLine()) {
@@ -313,10 +300,13 @@ class EsClientBrahmsTest {
                         final var data = BinaryData.of(doc.getBytes(StandardCharsets.UTF_8), ContentType.APPLICATION_JSON);
                         String finalDocId = docId;
                         ingester.add(bo -> bo.index(io -> io.id(finalDocId).document(data)));
+                        recordscreated++;
                     }
-
                 }
+                ingester.flush();
             }
+            return recordscreated;
+
         }
     }
 
